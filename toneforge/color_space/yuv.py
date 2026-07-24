@@ -24,7 +24,7 @@ def getMatrixRGB2YUV(gamut, white_point= np.array([0.31271, 0.32902]), is_narrow
     scale = (np.array([[219],[224],[224]])<<(offset_bits-8)) / (2**offset_bits-1) if is_narrow else np.ones((3,1))
     offset = np.array([[16],[128],[128]]) if is_narrow else np.array([[0],[128],[128]])
 
-    return np.round((2**weight_bits) * scale * M), offset << (offset_bits - 8)
+    return np.round((2**weight_bits) * scale * M).astype(np.int32), (offset << (offset_bits - 8)).ravel().astype(np.int16)
 
 
 def getMatrixYUV2RGB(gamut, white_point= np.array([0.31271, 0.32902]), is_narrow=False, weight_bits=8, offset_bits=8):
@@ -34,4 +34,4 @@ def getMatrixYUV2RGB(gamut, white_point= np.array([0.31271, 0.32902]), is_narrow
     scale = (2**offset_bits-1)/(np.array([219,224,224])<<(offset_bits-8)) if is_narrow else np.ones((3,1))
     offset = np.array([[16],[128],[128]]) if is_narrow else np.array([[0],[128],[128]])
 
-    return np.round((2**weight_bits)*scale*M), np.round(np.matmul(scale*M, -(offset << (offset_bits-8))))
+    return np.round((2**weight_bits)*scale*M).astype(np.int32), np.round(np.matmul(scale*M, -(offset << (offset_bits-8))).ravel()).astype(np.int16)

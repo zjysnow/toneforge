@@ -20,7 +20,6 @@ class ColorParams:
     def __str__(self) -> str:
         return f"log-level=error:range={self.range}:hdr10-opt={self.hdr10_opt}:transfer={self.transfer}:colorprim={self.color_prim}:colormatrix={self.color_matrix}"
 
-
     def get(self)->tuple:
         GAMUT_MAP = {
             "bt709": color.BT709,
@@ -31,9 +30,9 @@ class ColorParams:
             "bt470bg": color.BT601_625,
         }
         gamut = GAMUT_MAP.get(self.color_matrix, color.BT709)
-        whitepoint = color.WhitePoint[color.D65]
+        white_point = color.WhitePoint[color.D65]
         is_narrow = self.range == "limited"
-        return gamut, whitepoint, is_narrow
+        return gamut, white_point, is_narrow
 
     @classmethod
     def SDR(cls)->ColorParams:
@@ -66,7 +65,8 @@ class ColorParams:
         )
 
 class BaseVideoProcess(ABC):
-    def __init__(self, input_file:str, width:int, height:int, input_color: ColorParams, output_file:str, rate:int = 30, output_color: Optional[ColorParams] = None, max_queue_size:int = 8):
+    def __init__(self, input_file:str, width:int, height:int, input_color: ColorParams, 
+                 output_file:str, rate:int = 30, output_color: Optional[ColorParams] = None, max_queue_size:int = 8):
         self.input_file = input_file
         self.output_file = output_file
 
@@ -79,9 +79,9 @@ class BaseVideoProcess(ABC):
         self.rate = rate
 
         self.pix_fmt = "yuv420p10le"
+        self.dtype = np.uint16
 
         self.bufsize = width * height * 3
-        self.dtype = np.uint16
         self.y_size = width * height
         self.uv_size = self.y_size // 4
 
@@ -102,6 +102,7 @@ class BaseVideoProcess(ABC):
             "ffmpeg", "-y",
             "-loglevel", "error",
             "-i", self.input_file,
+            "-s", f"{self.width}x{self.height}",
             "-pix_fmt", self.pix_fmt,
             "-f", "rawvideo",
             "pipe:1"
@@ -124,44 +125,50 @@ class BaseVideoProcess(ABC):
         self.encoder_process = subprocess.Popen(encoder_cmd, stdin=subprocess.PIPE)
 
     def _read_thread(self):
-        while True:
-            buffer = self.decoder_process.stdout.read(self.bufsize)
-            if not buffer or len(buffer) != self.bufsize:
-                break
+        try:
+            while True:
+                buffer = self.decoder_process.stdout.read(self.bufsize)
+                if not buffer or len(buffer) != self.bufsize:
+                    break
 
-            data = np.frombuffer(buffer, dtype=self.dtype)
+                data = np.frombuffer(buffer, dtype=self.dtype)
 
-            Y = data[:self.y_size].reshape(self.height, self.width)
-            U = cv2.resize(data[self.y_size : self.y_size + self.uv_size].reshape(self.height // 2, self.width // 2), 
-                           (self.width, self.height), interpolation=cv2.INTER_LINEAR)
-            V = cv2.resize(data[self.y_size + self.uv_size:].reshape(self.height // 2, self.width // 2), 
-                           (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+                Y = data[:self.y_size].reshape(self.height, self.width)
 
-            yuv = np.stack([Y,U,V], axis = -1)
-            rgb = np.clip(((yuv @ self.M_yuv2rgb.T + 2048).astype(np.int64) >> 12) + self.O_yuv2rgb.reshape(1,1,3), 0, 1023).astype(self.dtype)
+                U = cv2.resize(data[self.y_size : self.y_size + self.uv_size].reshape(self.height // 2, self.width // 2), 
+                            (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+                V = cv2.resize(data[self.y_size + self.uv_size:].reshape(self.height // 2, self.width // 2), 
+                            (self.width, self.height), interpolation=cv2.INTER_LINEAR)
 
-            self.input_queue.put(rgb)
+                yuv = np.stack([Y,U,V], axis = -1)
+                rgb = np.clip(((yuv @ self.M_yuv2rgb.T + 2048) >> 12) + self.O_yuv2rgb, 0, 1023).astype(self.dtype)
 
-        self.input_queue.put(None)
-        self.decoder_process.stdout.close()
+                self.input_queue.put(rgb)
+        finally:
+            self.input_queue.put(None)
+            self.decoder_process.stdout.close()
 
     def _write_thread(self):
-        while True:
-            rgb = self.output_queue.get()
-            if rgb is None:
-                break
+        try:
+            while True:
+                rgb = self.output_queue.get()
+                if rgb is None:
+                    break
 
-            yuv = np.clip(((rgb @ self.M_rgb2yuv.T + 2048).astype(np.int64) >> 12) + self.O_rgb2yuv.reshape(1,1,3), 0, 1023).astype(self.dtype)
-            
-            Y = yuv[:,:,0].ravel()
-            U = cv2.resize(yuv[:,:,1], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
-            V = cv2.resize(yuv[:,:,2], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
+                yuv = np.clip(((rgb @ self.M_rgb2yuv.T + 2048) >> 12) + self.O_rgb2yuv, 0, 1023).astype(self.dtype)
+                
+                Y = yuv[:,:,0].ravel()
+                # U = cv2.resize(yuv[:,:,1], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
+                # V = cv2.resize(yuv[:,:,2], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
+                U = yuv[::2,::2,1].ravel()
+                V = yuv[::2,::2,2].ravel()
 
-            data = np.concatenate([Y,U,V])
-            
-            self.encoder_process.stdin.write(data.tobytes())
-            self.output_queue.task_done()
-        self.encoder_process.stdin.close()
+                data = np.concatenate([Y,U,V])
+                
+                self.encoder_process.stdin.write(data.tobytes())
+                self.output_queue.task_done()
+        finally:
+            self.encoder_process.stdin.close()
 
     def run(self):
         self._start_subprocess()
