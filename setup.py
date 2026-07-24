@@ -7,6 +7,10 @@ setup(
     install_requires=[
         'numpy',
         'colour-science',
+        'torch',
+        'scipy',
+        'matplotlib',
+        'opencv-python',
     ],
     author='albert',
     description='Local HDRI processing library with color space, tone mapping, and gamma tools',

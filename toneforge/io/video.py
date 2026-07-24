@@ -134,7 +134,6 @@ class BaseVideoProcess(ABC):
                 data = np.frombuffer(buffer, dtype=self.dtype)
 
                 Y = data[:self.y_size].reshape(self.height, self.width)
-
                 U = cv2.resize(data[self.y_size : self.y_size + self.uv_size].reshape(self.height // 2, self.width // 2), 
                             (self.width, self.height), interpolation=cv2.INTER_LINEAR)
                 V = cv2.resize(data[self.y_size + self.uv_size:].reshape(self.height // 2, self.width // 2), 
@@ -194,6 +193,10 @@ class BaseVideoProcess(ABC):
 
             self.decoder_process.wait()
             self.encoder_process.wait()
+            # if self.decoder_process.poll() is None:
+            #     self.decoder_process.kill()
+            # if self.encoder_process.poll() is None:
+            #     self.encoder_process.kill()
 
 
 if __name__ == "__main__":
