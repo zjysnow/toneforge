@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 import cv2
 from typing import Optional
+from tqdm import tqdm
 
 import toneforge.color_space as color
 
@@ -78,12 +79,12 @@ class BaseVideoProcess(ABC):
 
         self.rate = rate
 
-        self.pix_fmt = "yuv420p10le"
+        self.pix_fmt = "yuv444p10le"
         self.dtype = np.uint16
 
-        self.bufsize = width * height * 3
-        self.y_size = width * height
-        self.uv_size = self.y_size // 4
+        self.bufsize = width * height * 3 * 2
+        # self.y_size = width * height
+        # self.uv_size = self.y_size // 4
 
         self.M_rgb2yuv, self.O_rgb2yuv = color.getMatrixRGB2YUV(*self.output_color.get(), weight_bits=12, offset_bits=10)
         self.M_yuv2rgb, self.O_yuv2rgb = color.getMatrixYUV2RGB(*self.input_color.get(), weight_bits=12, offset_bits=10)
@@ -116,6 +117,7 @@ class BaseVideoProcess(ABC):
             "-f", "rawvideo",
             "-pix_fmt", self.pix_fmt,
             "-i", "pipe:0",
+            "-pix_fmt", "yuv420p10le",
             "-c:v", "libx265",
             "-tag:v", "hvc1",
             "-x265-params", f"{self.output_color}",
@@ -132,14 +134,14 @@ class BaseVideoProcess(ABC):
                     break
 
                 data = np.frombuffer(buffer, dtype=self.dtype)
+                yuv = data.reshape(3, self.height, self.width).transpose(1,2,0)
 
-                Y = data[:self.y_size].reshape(self.height, self.width)
-                U = cv2.resize(data[self.y_size : self.y_size + self.uv_size].reshape(self.height // 2, self.width // 2), 
-                            (self.width, self.height), interpolation=cv2.INTER_LINEAR)
-                V = cv2.resize(data[self.y_size + self.uv_size:].reshape(self.height // 2, self.width // 2), 
-                            (self.width, self.height), interpolation=cv2.INTER_LINEAR)
-
-                yuv = np.stack([Y,U,V], axis = -1)
+                # Y = data[:self.y_size].reshape(self.height, self.width)
+                # U = cv2.resize(data[self.y_size : self.y_size + self.uv_size].reshape(self.height // 2, self.width // 2), 
+                #             (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+                # V = cv2.resize(data[self.y_size + self.uv_size:].reshape(self.height // 2, self.width // 2), 
+                #             (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+                # yuv = np.stack([Y,U,V], axis = -1)
                 rgb = np.clip(((yuv @ self.M_yuv2rgb.T + 2048) >> 12) + self.O_yuv2rgb, 0, 1023).astype(self.dtype)
 
                 self.input_queue.put(rgb)
@@ -155,14 +157,15 @@ class BaseVideoProcess(ABC):
                     break
 
                 yuv = np.clip(((rgb @ self.M_rgb2yuv.T + 2048) >> 12) + self.O_rgb2yuv, 0, 1023).astype(self.dtype)
+                data = yuv.transpose(2,0,1).ravel()
                 
-                Y = yuv[:,:,0].ravel()
-                # U = cv2.resize(yuv[:,:,1], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
-                # V = cv2.resize(yuv[:,:,2], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
-                U = yuv[::2,::2,1].ravel()
-                V = yuv[::2,::2,2].ravel()
+                # Y = yuv[:,:,0].ravel()
+                # # U = cv2.resize(yuv[:,:,1], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
+                # # V = cv2.resize(yuv[:,:,2], (self.width//2, self.height//2), interpolation=cv2.INTER_LINEAR).ravel()
+                # U = yuv[::2,::2,1].ravel()
+                # V = yuv[::2,::2,2].ravel()
 
-                data = np.concatenate([Y,U,V])
+                # data = np.concatenate([Y,U,V])
                 
                 self.encoder_process.stdin.write(data.tobytes())
                 self.output_queue.task_done()
@@ -179,12 +182,15 @@ class BaseVideoProcess(ABC):
         writer.start()
 
         try:
-            while True:
-                rgb = self.input_queue.get()
-                if rgb is None:
-                    break
-                rgb = self.process_frame(rgb)
-                self.output_queue.put(rgb)
+            with tqdm(desc="Processing Stream", unit=" frames") as pbar:
+                while True:
+                    rgb = self.input_queue.get()
+                    if rgb is None:
+                        break
+                    rgb = self.process_frame(rgb)
+                    self.output_queue.put(rgb)
+
+                    pbar.update(1)
         finally:
             self.output_queue.put(None)
 

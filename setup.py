@@ -11,6 +11,7 @@ setup(
         'scipy',
         'matplotlib',
         'opencv-python',
+        'tqdm',
     ],
     author='albert',
     description='Local HDRI processing library with color space, tone mapping, and gamma tools',
