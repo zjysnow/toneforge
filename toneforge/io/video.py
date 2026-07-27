@@ -4,7 +4,6 @@ import queue
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import numpy as np
-import cv2
 from typing import Optional
 from tqdm import tqdm
 

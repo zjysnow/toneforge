@@ -208,5 +208,8 @@ __marimo__/
 
 .DS_Store
 .vscode/
+
 data
 sandbox
+
+*.pth
