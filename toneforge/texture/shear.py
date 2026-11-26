@@ -40,19 +40,19 @@ class ShearMethod(Enum):
 
     @staticmethod
     def _y8(x, y):
-        return x, y-(y>>3)+(x>>3)
+        return x, y-(y>>3)-(x>>3)
 
     @staticmethod
     def _y18(x, y):
-        return x, y-(y>>2)+(x>>2)
+        return x, y-(y>>2)-(x>>2)
 
     @staticmethod
     def _y31(x, y):
-        return x, (y>>1)+(y>>3)+(x>>2)+(x>>3)
+        return x, (y>>1)+(y>>3)-(x>>2)-(x>>3)
 
     @staticmethod
     def _y45(x, y):
-        return x, (x>>1)+(y>>1)
+        return x, (y>>1)-(x>>1)
 
 ShearMethod._METHODS = {
     ShearMethod.X0: ShearMethod._x0,

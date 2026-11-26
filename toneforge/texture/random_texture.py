@@ -39,6 +39,7 @@ class RandomTextureConfig:
     pipeline: tuple[PipelineConfig,...]
     pipeline_count: int
     resample: ResampleConfig
+    offset: int
 
     def __post_init__(self):
         if self.pipeline_count <0 or self.pipeline_count > 4:
@@ -46,6 +47,8 @@ class RandomTextureConfig:
         expected_length = 1 << self.pipeline_count
         if len(self.pipeline) != expected_length:
             raise ValueError(f"pipeline must have length {expected_length}")
+        if not isinstance(self.offset, int):
+            raise ValueError("offset must be an integer")
 
 
 class RandomTexture:
@@ -59,7 +62,15 @@ class RandomTexture:
         for pipeline_cfg in self.config.pipeline:
             # Apply each pipeline configuration to the mesh grid
             random_texture += (RandomTexture._generate_layer(mesh_grid, self.config.texture_table, pipeline_cfg, self.config.resample) >> self.config.pipeline_count)
-        return random_texture
+        return random_texture - self.config.offset
+
+    def estimate_mean(self) -> float:
+        """Estimate the texture DC mean from the table mean and pipe thresholds."""
+        activation_rates = [
+            np.clip((1024 - pipeline_cfg.threshold) / 1024, 0.0, 1.0)
+            for pipeline_cfg in self.config.pipeline
+        ]
+        return float(self.config.texture_table.mean() * np.mean(activation_rates))
 
     @staticmethod
     def _rand_coor_2d_to_16bit(x_16, y_16):
@@ -131,15 +142,16 @@ if __name__ == "__main__":
     
     config = RandomTextureConfig(
         texture_table = np.array([
-            [-13,  51, -13, -13, -13, -13,  51, -13],
-            [-13, -13,  51, -13, -13,  51, -13, -13],
-            [-13, -13, -13,  51,  51, -13, -13, -13],
-            [-13, -13, -13, -13,  51,  51, -13, -13],
-            [-13, -13, -13,  51, -13, -13,  51, -13],
-            [-13, -13,  51, -13, -13,  51, -13, -13],
-            [-13,  51, -13, -13, -13, -13, -13, -13],
-            [-13, -13, -13, -13, -13, -13,  51, -13],
-        ], dtype=np.int16) * 20,
+            [  0,    0,  240,  480,    0, -240,    0, -480],
+            [  0,  240,  720,  960,  240, -480, -720, -960],
+            [-240,    0,  240,  480,    0, -240, -480,  240],
+            [  0, -240, -480,    0,  240,  720,  480, -720],
+            [480,    0, -240, -720, -240,    0,  240,  480],
+            [960,  720,  480,    0, -480, -960, -720,    0],
+            [-240,  480,  240,    0, -240, -480,    0,  240],
+            [-480,    0,  240,  240,  480,    0, -240, -240],
+        ], dtype=np.int16),
+        # texture_table = np.full((8,8), 1023, dtype=np.int16),
         pipeline_count=2,
         # pipeline = (
         #     # 两层连续的主结构
@@ -163,44 +175,54 @@ if __name__ == "__main__":
         # ),
         # resample = ResampleConfig(
         #     n=1,
-        #     resample=((0, 0), (3, 11)),
+        #     resample=((0, 0), (3, 11)
         #     jitter=True,
         #     flip=True,
         # )
+        # pipeline = (
+        #     PipelineConfig(ShearMethod.X45, scale=(0, 0), translation=(0,  0), threshold=900),
+        #     PipelineConfig(ShearMethod.Y45, scale=(0, 0), translation=(0,  0), threshold=900),
+        #     # PipelineConfig(ShearMethod.X31, scale=(-1, -1), translation=( 63, 765), threshold=352),
+        #     # PipelineConfig(ShearMethod.Y45, scale=( 1, -1), translation=( 98, 112), threshold=448),
+        # ),
         pipeline = (
-            # 主方向：两层相同 shear、不同相位，贡献约 50%
-            PipelineConfig(ShearMethod.X8,  scale=(-1, -1), translation=(31, 27),  threshold=768),
-            PipelineConfig(ShearMethod.X45,  scale=(-1, -1), translation=(231, 87), threshold=768),
-
-            # 次方向：增加不规则的斜向短纤维
-            PipelineConfig(ShearMethod.X18, scale=(-1, -1), translation=(63, 765), threshold=768),
-
-            # 细节层：打散而不形成明显横纹
-            PipelineConfig(ShearMethod.X31, scale=(-1, -1), translation=(98, 112), threshold=768),
+            # A dominant but intermittent grain avoids a woven crosshatch.
+            PipelineConfig(ShearMethod.X8, scale=(1, -1), translation=(37, 19), threshold=64),
+            PipelineConfig(ShearMethod.X18, scale=(0, -1), translation=(173, 91), threshold=192),
+            # Sparse, steeper fibers add irregular cross-grain detail.
+            PipelineConfig(ShearMethod.Y18, scale=(-1, 0), translation=(311, 509), threshold=384),
+            PipelineConfig(ShearMethod.Y31, scale=(-1, -1), translation=(709, 137), threshold=576),
         ),
         resample = ResampleConfig(
             n=1,
-            resample=((0, 0), (3, 11)),
+            resample=[(0, 0), (5, 9)],
             jitter=True,
             flip=True,
-        )
+        ),
+        offset = 0,
     )
 
     random_texture = RandomTexture(config=config)
 
     texture = random_texture.generate(1920, 1080)
-    print(config.texture_table.std())
+    # print(config.texture_table.std())
     print(texture.mean())
 
     image = cv2.imread("data/desktop.jpg")[:,:,::-1] / 255.0
     h, w, _ = image.shape
     texture = random_texture.generate(h, w)
 
-    print(texture.std())
-
-    ret = image + 0.3*image * texture[:,:,np.newaxis]/1023 + 0.1*texture[:,:,np.newaxis] / 1023
+    print(texture.mean())
+    m_a = 0.30
+    m_nb = 0.1
+    ret = image + m_a*image * texture[:,:,np.newaxis]/1023 + m_nb*texture[:,:,np.newaxis] / 1023
 
     cv2.imwrite("data/desktop_2.jpg", ret[:,:,::-1] * 255)
+
+    plt.figure()
+    plt.imshow(config.texture_table)
+
+    plt.figure()
     plt.title("Random Texture")
     plt.imshow(texture)
     plt.xticks([])
